@@ -33,7 +33,9 @@ export class ResponseRulesInterpreter {
 
   /**
    * Choose the route response depending on the first fulfilled rule.
-   * If no rule has been fulfilled get the first route response.
+   * If no rule has been fulfilled get the default or first route response.
+   *
+   * @param requestNumber
    */
   public chooseResponse(requestNumber: number): RouteResponse {
     // if no rules were fulfilled find the default one, or first one if no default
@@ -77,6 +79,38 @@ export class ResponseRulesInterpreter {
   }
 
   /**
+   * Resolve the target value of a rule, returning false in case the target is 'cookie' and the rule has no modifier.
+   *
+   * @param rule
+   * @returns
+   */
+  private resolveTargetValue(rule: ResponseRule): any {
+    let value: any;
+
+    if (rule.target === 'cookie') {
+      if (rule.modifier) {
+        value = this.request.cookies && this.request.cookies[rule.modifier];
+      } else {
+        value = false;
+      }
+    } else if (rule.target === 'header') {
+      value = this.request.header(rule.modifier);
+    } else if (rule.modifier) {
+      let path: string | string[] = rule.modifier;
+
+      if (typeof path === 'string') {
+        path = convertPathToArray(path);
+      }
+
+      value = objectPathGet(this.targets[rule.target], path);
+    } else if (rule.target === 'body') {
+      value = this.targets.bodyRaw;
+    }
+
+    return value;
+  }
+
+  /**
    * Check a rule validity and invert it if invert is at true
    *
    * @param rule
@@ -94,7 +128,7 @@ export class ResponseRulesInterpreter {
   }
 
   /**
-   * Check if a rule is valid by comparing the value extracted from the target to the rule value
+   * Check if a rule is valid by comparing the resolved target value with the target value
    */
   private isValidRule = (
     rule: ResponseRule,
@@ -108,27 +142,8 @@ export class ResponseRulesInterpreter {
 
     if (rule.target === 'request_number') {
       value = requestNumber;
-    }
-
-    if (rule.target === 'cookie') {
-      if (!rule.modifier) {
-        return false;
-      }
-      value = this.request.cookies && this.request.cookies[rule.modifier];
-    } else if (rule.target === 'header') {
-      value = this.request.header(rule.modifier);
     } else {
-      if (rule.modifier) {
-        let path: string | string[] = rule.modifier;
-
-        if (typeof path === 'string') {
-          path = convertPathToArray(path);
-        }
-
-        value = objectPathGet(this.targets[rule.target], path);
-      } else if (!rule.modifier && rule.target === 'body') {
-        value = this.targets.bodyRaw;
-      }
+      value = this.resolveTargetValue(rule);
     }
 
     if (rule.operator === 'null' && rule.modifier) {
@@ -143,31 +158,32 @@ export class ResponseRulesInterpreter {
       return false;
     }
 
-    // value may be explicitely null (JSON), this is considered as an empty string
+    // value may be explicitly null (JSON), this is considered as an empty string
     if (value === null) {
       value = '';
     }
 
-    // rule value may be explicitely null (is shouldn't anymore), this is considered as an empty string too
+    // rule value may be explicitly null (is shouldn't anymore), this is considered as an empty string too
     if (rule.value === null) {
       rule.value = '';
     }
 
     let regex: RegExp;
+    let isMatch;
 
     if (rule.operator === 'regex') {
       regex = new RegExp(rule.value);
 
-      return Array.isArray(value)
+      isMatch = Array.isArray(value)
         ? value.some((arrayValue) => regex.test(arrayValue))
         : regex.test(value);
+    } else if (Array.isArray(value)) {
+      isMatch = value.includes(rule.value);
+    } else {
+      isMatch = String(value) === String(rule.value);
     }
 
-    if (Array.isArray(value)) {
-      return value.includes(rule.value);
-    }
-
-    return String(value) === String(rule.value);
+    return isMatch;
   };
 
   /**

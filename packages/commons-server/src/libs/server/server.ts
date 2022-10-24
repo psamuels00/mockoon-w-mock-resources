@@ -153,6 +153,29 @@ export class MockoonServer extends (EventEmitter as new () => TypedEmitter<Serve
   }
 
   /**
+   * Select a response for a particular request.
+   *
+   * @param route
+   * @param request
+   * @param requestNumber
+   *
+   * @returns
+   */
+  public selectResponse(
+    route: Route,
+    request: Request,
+    requestNumber: number
+  ) {
+    const enabledRouteResponse = new ResponseRulesInterpreter(
+      route.responses,
+      request,
+      route.responseMode
+    ).chooseResponse(requestNumber);
+
+    return enabledRouteResponse;
+  }
+
+  /**
    * ### Middleware ###
    * Emit the SERVER_ENTERING_REQUEST event
    *
@@ -366,7 +389,6 @@ export class MockoonServer extends (EventEmitter as new () => TypedEmitter<Serve
    * @param server
    * @param route
    * @param routePath
-   * @param requestNumber
    */
   private createRESTRoute(
     server: Application,
@@ -392,11 +414,11 @@ export class MockoonServer extends (EventEmitter as new () => TypedEmitter<Serve
         return;
       }
 
-      const enabledRouteResponse = new ResponseRulesInterpreter(
-        currentRoute.responses,
+      const enabledRouteResponse = this.selectResponse(
+        currentRoute,
         request,
-        currentRoute.responseMode
-      ).chooseResponse(requestNumber);
+        requestNumber
+      );
 
       requestNumber += 1;
 
