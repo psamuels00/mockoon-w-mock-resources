@@ -35,9 +35,9 @@ export class ResponseRulesInterpreter {
    * Choose the route response depending on the first fulfilled rule.
    * If no rule has been fulfilled get the default or first route response.
    *
-   * @param requestNumber
+   * @param requestNumbers cache of request numbers per endpoint and mock resource that is updated by this function
    */
-  public chooseResponse(requestNumber: number): RouteResponse {
+  public chooseResponse(requestNumbers: object): RouteResponse {
     // if no rules were fulfilled find the default one, or first one if no default
     const defaultResponse =
       this.routeResponses.find((routeResponse) => routeResponse.default) ||
@@ -51,7 +51,7 @@ export class ResponseRulesInterpreter {
       return this.routeResponses[randomStatus];
     } else if (this.responseMode === ResponseMode.SEQUENTIAL) {
       return this.routeResponses[
-        (requestNumber - 1) % this.routeResponses.length
+        (requestNumbers['endpoint'] - 1) % this.routeResponses.length
       ];
     } else if (this.responseMode === ResponseMode.DISABLE_RULES) {
       return defaultResponse;
@@ -61,13 +61,30 @@ export class ResponseRulesInterpreter {
           return false;
         }
 
-        return routeResponse.rulesOperator === 'AND'
-          ? routeResponse.rules.every((rule) =>
-              this.isValid(rule, requestNumber)
-            )
-          : routeResponse.rules.some((rule) =>
-              this.isValid(rule, requestNumber)
-            );
+        let mockResourceKey;
+        try {
+          mockResourceKey = this.identifyMockResource(routeResponse);
+        } catch (error: any) {
+          // nop
+        }
+
+        const resourceKey = mockResourceKey || 'endpoint';
+        const requestNumber = requestNumbers[resourceKey] || 1;
+
+        const isSelected =
+          routeResponse.rulesOperator === 'AND'
+            ? routeResponse.rules.every((rule) =>
+                this.isValid(rule, requestNumber)
+              )
+            : routeResponse.rules.some((rule) =>
+                this.isValid(rule, requestNumber)
+              );
+
+        if (isSelected && mockResourceKey) {
+          requestNumbers[mockResourceKey] = requestNumber + 1;
+        }
+
+        return isSelected;
       });
 
       if (response === undefined) {
@@ -79,7 +96,65 @@ export class ResponseRulesInterpreter {
   }
 
   /**
-   * Resolve the target value of a rule, returning false in case the target is 'cookie' and the rule has no modifier.
+   * Identify a "mock resource" based on the rules associated with a response and the corresponding resolved target
+   * values of a request.  The request may or may not match the rules.  A mock resource is identified only when the
+   * following constraints are satisfied:
+   *
+   *  - A conjunction of simple rules is made using AND as the join operator,
+   *  - All the simple rules are based on positive, rather than inverted, matching,
+   *  - At least one of the simple rules has a 'request_number' target, and
+   *  - At least one of the simple rules has a 'query', 'params', or 'body' target.
+   *
+   * If all these conditions are met, then for each simple rule with a 'query', 'params', or 'body' target, a simple
+   * key is formed by combining the target value with the resolved target value.  The simple keys are combined to form
+   * an identifier of a would-be (ie, mock) resource.  For the purpose of identifying a mock resource, rules with a
+   * 'header' or 'cookie' target are ignored.  If a mock resource is not identified, we return undefined.
+   *
+   * @param routeResponse
+   * @returns
+   */
+  private identifyMockResource(routeResponse: RouteResponse): string {
+    let key;
+
+    const attributeRules = routeResponse.rules.filter((rule) =>
+      ['query', 'params', 'body'].some((x) => rule.target === x)
+    );
+    const requestNumberRules = routeResponse.rules.filter(
+      (rule) => rule.target === 'request_number'
+    );
+    const allRulesQualify = attributeRules
+      .concat(requestNumberRules)
+      .every((rule) => !rule.invert);
+    const isConjunction = routeResponse.rulesOperator === 'AND'
+    const atLeastOneOfEach =
+      attributeRules.length > 0 && requestNumberRules.length > 0;
+
+    if (
+      allRulesQualify && isConjunction && atLeastOneOfEach
+    ) {
+      key = attributeRules
+        .map((rule) => this.mockResourceAttribute(rule))
+        .join('|');
+    }
+
+    return key;
+  }
+
+  /**
+   * Encode a potential mock resource attribute based on the target value and the resolved target value.
+   *
+   * @param rule
+   * @returns
+   */
+  private mockResourceAttribute(rule: ResponseRule): string {
+    return [rule.target, rule.modifier, this.resolveTargetValue(rule)].join(
+      ':'
+    );
+  }
+
+  /**
+   * Resolve the target value of a rule, throwing an Error in case there is no target, the target is 'cookie' and the
+   * rule has no modifier, or the target is 'request_number'.
    *
    * @param rule
    * @returns
@@ -87,11 +162,17 @@ export class ResponseRulesInterpreter {
   private resolveTargetValue(rule: ResponseRule): any {
     let value: any;
 
-    if (rule.target === 'cookie') {
+    if (!rule.target) {
+      throw Error('Cannot resolve target value for rule with no target');
+    } else if (rule.target === 'request_number') {
+      throw Error("Cannot resolve target value for 'request_number' target");
+    } else if (rule.target === 'cookie') {
       if (rule.modifier) {
         value = this.request.cookies && this.request.cookies[rule.modifier];
       } else {
-        value = false;
+        throw Error(
+          "Cannot resolve target value for rule with unspecified 'cookie' target"
+        );
       }
     } else if (rule.target === 'header') {
       value = this.request.header(rule.modifier);
@@ -134,16 +215,16 @@ export class ResponseRulesInterpreter {
     rule: ResponseRule,
     requestNumber: number
   ): boolean => {
-    if (!rule.target) {
-      return false;
-    }
-
     let value: any;
 
     if (rule.target === 'request_number') {
       value = requestNumber;
     } else {
-      value = this.resolveTargetValue(rule);
+      try {
+        value = this.resolveTargetValue(rule);
+      } catch (error: any) {
+        return false;
+      }
     }
 
     if (rule.operator === 'null' && rule.modifier) {
