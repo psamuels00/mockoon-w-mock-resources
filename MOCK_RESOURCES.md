@@ -196,7 +196,7 @@ This means the first response matches on any request number and the
 id contains "-N-" or "-U-".  In this case, the status is returned as
 New or Used, accordingly, using a templated response.  The second
 response, with a status of New, is returned when the request number
-is 1 and the id begins with "-N".  The third response checks for
+is 1 and the id contains "-N".  The third response checks for
 request number >= 3.  And so forth.  The last response acts as a
 catch-all and is designated as the default.
 
